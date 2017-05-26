@@ -1,4 +1,4 @@
-package org.nmdp.kafkaconsumer.config;
+package org.nmdp.kafkaconsumer.metrics;
 
 /**
  * Created by Andrew S. Brown, Ph.D., <andrew@nmdp.org>, on 5/26/17.
@@ -24,35 +24,27 @@ package org.nmdp.kafkaconsumer.config;
  * > http://www.opensource.org/licenses/lgpl-license.php
  */
 
-import java.util.Map;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
-public class KafkaConsumerProperties {
-    public static Map<String, Object> getConfig() {
-        return new HashMap<>();
+public class MetricNameBuilder {
+    private final List<String> parts;
+
+    private MetricNameBuilder() {
+        parts = new ArrayList<>();
     }
 
-    public static String getClientId() {
-        return "";
+    public static MetricNameBuilder of(Class<?> clazz) {
+        return new MetricNameBuilder().and("name", clazz.getName());
     }
 
-    public static String getConsumerGroup() {
-        return "";
+    public MetricNameBuilder and(String key, String value) {
+        parts.add(key + "=" + value);
+        return this;
     }
 
-    public static Integer getMaxWait() {
-        return 0;
-    }
-
-    public static Integer getHwmRefreshIntervalMs() {
-        return 0;
-    }
-
-    public static Integer getMaxMessagesBeforeCommit() {
-        return 0;
-    }
-
-    public static Integer getMaxTimeBeforeCommit() {
-        return 0;
+    public String build() {
+        return parts.stream().collect(Collectors.joining(","));
     }
 }

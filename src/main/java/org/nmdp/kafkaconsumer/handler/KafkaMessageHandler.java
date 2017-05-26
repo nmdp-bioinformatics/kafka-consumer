@@ -1,4 +1,4 @@
-package org.nmdp.kafkaconsumer.config;
+package org.nmdp.kafkaconsumer.handler;
 
 /**
  * Created by Andrew S. Brown, Ph.D., <andrew@nmdp.org>, on 5/26/17.
@@ -24,35 +24,8 @@ package org.nmdp.kafkaconsumer.config;
  * > http://www.opensource.org/licenses/lgpl-license.php
  */
 
-import java.util.Map;
-import java.util.HashMap;
-
-public class KafkaConsumerProperties {
-    public static Map<String, Object> getConfig() {
-        return new HashMap<>();
-    }
-
-    public static String getClientId() {
-        return "";
-    }
-
-    public static String getConsumerGroup() {
-        return "";
-    }
-
-    public static Integer getMaxWait() {
-        return 0;
-    }
-
-    public static Integer getHwmRefreshIntervalMs() {
-        return 0;
-    }
-
-    public static Integer getMaxMessagesBeforeCommit() {
-        return 0;
-    }
-
-    public static Integer getMaxTimeBeforeCommit() {
-        return 0;
-    }
+public interface KafkaMessageHandler {
+    void process(String topic, int partition, long offset, byte[] key, byte[] payload) throws Exception;
+    void commit(String topic, int partition, long offset) throws Exception;
+    void rollback(String topic, int partition, long offset) throws Exception;
 }
