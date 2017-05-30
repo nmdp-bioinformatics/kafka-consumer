@@ -24,13 +24,11 @@ package org.nmdp.kafkaconsumer.consumer;
  * > http://www.opensource.org/licenses/lgpl-license.php
  */
 
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.errors.WakeupException;
@@ -91,18 +89,18 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
     private final Map<TopicPartition, Long> highWaterMarks = new ConcurrentHashMap<>();
     private final AtomicReference<Set<TopicPartition>> assignmentCache = new AtomicReference<>(Collections.emptySet());
 
-    public KafkaMessageConsumer(String brokerId, String topic, KafkaMessageHandler handler, MetricRegistry metrics) {
-        super("Consumer " + KafkaConsumerProperties.getClientId() + ":" + KafkaConsumerProperties.getConsumerGroup() + "@" + brokerId + "://" + topic);
+    public KafkaMessageConsumer(String brokerId, String topic, KafkaMessageHandler handler, MetricRegistry metrics, KafkaConsumerProperties consumerProperties) {
+        super("Consumer " + consumerProperties.getBaseProperties().getClientId() + ":" + consumerProperties.getBaseProperties().getConsumerGroup() + "@" + brokerId + "://" + topic);
 
         this.handler = handler;
         this.topic = topic;
-        this.consumerGroup = KafkaConsumerProperties.getConsumerGroup();
-        this.clientId = KafkaConsumerProperties.getClientId();
-        this.maxWait = KafkaConsumerProperties.getMaxWait();
-        this.maxMessagesBeforeCommit = KafkaConsumerProperties.getMaxMessagesBeforeCommit();
-        this.maxTimeBeforeCommit = (long) KafkaConsumerProperties.getMaxTimeBeforeCommit();
+        this.consumerGroup = consumerProperties.getBaseProperties().getConsumerGroup();
+        this.clientId = consumerProperties.getBaseProperties().getClientId();
+        this.maxWait = consumerProperties.getBaseProperties().getMaxWait();
+        this.maxMessagesBeforeCommit = consumerProperties.getBaseProperties().getMaxMessagesBeforeCommit();
+        this.maxTimeBeforeCommit = (long) consumerProperties.getBaseProperties().getMaxTimeBeforeCommit();
         this.brokerId = brokerId;
-        this.hwmRefreshIntervalMs = KafkaConsumerProperties.getHwmRefreshIntervalMs();
+        this.hwmRefreshIntervalMs = consumerProperties.getBaseProperties().getHwmRefreshIntervalMs();
 
         this.handlerProcess = metrics.timer(metricName("handlerProcess"));
         this.handlerCommit = metrics.timer(metricName("handlerCommit"));
@@ -154,11 +152,9 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
         long hwm = 0L;
         Long lastHwm = highWaterMarks.get(new TopicPartition(topic, partition));
         if (lastHwm == null) {
-            // assume we are caught up
             hwm = offset + 1L;
         } else {
             hwm = lastHwm.longValue();
-            // if offset is > hwm, we are probably caught up as well.
             if (hwm < offset) {
                 hwm = offset + 1L;
             }
@@ -179,11 +175,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                     topic, partition, consumerGroup, offset, hwm, hwm - offset - 1L });
 
         } catch (Exception e) {
-            // handler failed to commit. this is bad, as it means the messages
-            // might not be delivered
             LOG.error("Error committing messages in handler", e);
-
-            // rethrow exception so that we crash out and get restarted
             throw e;
         }
 
@@ -199,8 +191,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
             LOG.info("Kafka commit on {}-{} for consumer group {} through offset {} (hwm {}, behind {})",
                     new Object[] { topic, partition, consumerGroup, offset, hwm, hwm - offset - 1L });
         } catch (Exception e) {
-            // log this, but take no further action; at most, we get some
-            // duplicate messages
             LOG.error("Unable to commit offsets to Kafka", e);
         }
 
@@ -209,7 +199,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
 
     private void refreshHighWaterMarks() {
 
-        // retrieve metadata (this should only be done every 10-30 sec or so)
         long totalBehind = 0L;
 
         for (TopicPartition tp : consumer.assignment()) {
@@ -230,9 +219,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                 return;
             } catch (Exception e) {
                 LOG.error("Error while retrieving partition high water marks", e);
-
-                // we might have reset our subscriptions... better rollback and clear out everything
-
                 abortAll();
             }
         }
@@ -241,13 +227,8 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
     }
 
     private void abortAll() {
-        // rollback everything
         rollbackAll();
-
-        // clear out all state
         clearState();
-
-        // delete our subscriptions and recreate them
         consumer.unsubscribe();
         consumer.subscribe(Collections.singletonList(topic), new RebalanceListener());
     }
@@ -261,13 +242,11 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
         while (true) {
 
             try {
-                // retrieve high water marks periodically so we can report on how well we are performing
                 if (System.currentTimeMillis() >= nextRefreshTime.get()) {
                     refreshHighWaterMarks();
                     nextRefreshTime.set(System.currentTimeMillis() + (long) hwmRefreshIntervalMs);
                 }
 
-                // handle shutdown condition
                 if (shutdown.get()) {
                     commitAll();
                     return;
@@ -281,7 +260,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                     lastFetched.set(System.currentTimeMillis());
                 } catch (WakeupException we) {
                     if (shutdown.get()) {
-                        continue; // loop around and shutdown properly
+                        continue;
                     }
                     throw we;
                 } finally {
@@ -312,14 +291,11 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                         }
 
                         rollbackOffsets.compute(tp, (k, v) -> (v == null) ? record.offset() : Math.max(v.longValue(), record.offset()));
-
-                        // increment messages received counter
                         messagesReceived.compute(tp,
                                 (k, v) -> (v == null) ? (long) 1L : v.longValue() + (long) 1L);
 
                         commitOffsets.compute(tp, (k, v) -> new OffsetAndMetadata(record.offset()));
 
-                        // commit if necessary
                         Long currentMessagesReceived = messagesReceived.get(tp);
                         Long currentCommitTime = nextCommitTime.get(tp);
                         if (currentMessagesReceived != null && currentCommitTime != null &&
@@ -342,7 +318,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                     }
                 }
 
-                // commit if necessary
                 for (TopicPartition tp : consumer.assignment()) {
                     Long currentMessagesReceived = messagesReceived.get(tp);
                     Long currentCommitTime = nextCommitTime.get(tp);
@@ -386,7 +361,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
             OffsetAndMetadata oam = entry.getValue();
             if (oam != null) {
                 try {
-                    // commit downstream and to Kafka
                     commit(tp.topic(), tp.partition(), oam.offset());
                 } catch (Exception e) {
                     LOG.error("Error while committing offsets to " + tp.topic() + "-" + tp.partition() + ": ", e);
@@ -430,8 +404,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
             LOG.info("Handler rollback on {}-{} for consumer group {} from offset {}", new Object[] { topic, partition, consumerGroup,
                     offset });
         } catch (Exception e) {
-            // log this, but take no action; if rollback fails downstream, worst
-            // case is duplicate delivery
             LOG.error("Error while rolling back message handler", e);
         }
         clearState(new TopicPartition(topic, partition));
@@ -499,7 +471,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
 
             for (TopicPartition tp : partitions) {
 
-                // commit downstream and to Kafka
                 OffsetAndMetadata oam = commitOffsets.get(tp);
                 if (oam != null) {
                     try {
@@ -509,7 +480,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                     }
                 }
 
-                // cleanup metadata
                 clearState(tp);
             }
 
@@ -527,7 +497,6 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
             }
             LOG.info(buf.toString());
 
-            // reset metadata timeout
             nextRefreshTime.set(0L);
 
             assignmentCache.set(consumer.assignment());

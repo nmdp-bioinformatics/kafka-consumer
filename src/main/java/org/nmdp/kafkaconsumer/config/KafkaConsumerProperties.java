@@ -24,35 +24,46 @@ package org.nmdp.kafkaconsumer.config;
  * > http://www.opensource.org/licenses/lgpl-license.php
  */
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.yaml.snakeyaml.Yaml;
+
+import java.io.InputStream;
+import java.net.URL;
 import java.util.Map;
 import java.util.HashMap;
 
 public class KafkaConsumerProperties {
+    private Yaml yaml = new Yaml();
+    private static final Logger LOG = LoggerFactory.getLogger(KafkaConsumerProperties.class);
+
+    private final BaseProperties baseProperties;
+
+    public KafkaConsumerProperties() throws Exception {
+        this.baseProperties = buildBasePropertiesByConfig();
+    }
+
+    private BaseProperties buildBasePropertiesByConfig() throws Exception {
+        try {
+            URL url = new URL("file:./src/main/resources/consumer-configuration.yaml");
+
+            try (InputStream inputStream = url.openStream()) {
+                Configuration config = yaml.loadAs(inputStream, Configuration.class);
+                BaseProperties.Builder builder = BaseProperties.builder();
+                return builder.build(config);
+            }
+        }catch (Exception ex) {
+            LOG.error("Error reading config file.", ex);
+            throw ex;
+        }
+    }
+
     public static Map<String, Object> getConfig() {
         return new HashMap<>();
     }
 
-    public static String getClientId() {
-        return "";
-    }
-
-    public static String getConsumerGroup() {
-        return "";
-    }
-
-    public static Integer getMaxWait() {
-        return 0;
-    }
-
-    public static Integer getHwmRefreshIntervalMs() {
-        return 0;
-    }
-
-    public static Integer getMaxMessagesBeforeCommit() {
-        return 0;
-    }
-
-    public static Integer getMaxTimeBeforeCommit() {
-        return 0;
+    public BaseProperties getBaseProperties() {
+        return baseProperties;
     }
 }
