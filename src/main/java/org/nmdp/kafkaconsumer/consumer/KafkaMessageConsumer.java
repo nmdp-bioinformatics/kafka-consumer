@@ -24,6 +24,8 @@ package org.nmdp.kafkaconsumer.consumer;
  * > http://www.opensource.org/licenses/lgpl-license.php
  */
 
+import org.apache.kafka.clients.consumer.RangeAssignor;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -90,17 +92,17 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
     private final AtomicReference<Set<TopicPartition>> assignmentCache = new AtomicReference<>(Collections.emptySet());
 
     public KafkaMessageConsumer(String brokerId, String topic, KafkaMessageHandler handler, MetricRegistry metrics, KafkaConsumerProperties consumerProperties) {
-        super("Consumer " + consumerProperties.getBaseProperties().getClientId() + ":" + consumerProperties.getBaseProperties().getConsumerGroup() + "@" + brokerId + "://" + topic);
+        super("Consumer " + consumerProperties.getClientId() + ":" + consumerProperties.getConsumerGroup() + "@" + brokerId + "://" + topic);
 
         this.handler = handler;
         this.topic = topic;
-        this.consumerGroup = consumerProperties.getBaseProperties().getConsumerGroup();
-        this.clientId = consumerProperties.getBaseProperties().getClientId();
-        this.maxWait = consumerProperties.getBaseProperties().getMaxWait();
-        this.maxMessagesBeforeCommit = consumerProperties.getBaseProperties().getMaxMessagesBeforeCommit();
-        this.maxTimeBeforeCommit = (long) consumerProperties.getBaseProperties().getMaxTimeBeforeCommit();
+        this.consumerGroup = consumerProperties.getConsumerGroup();
+        this.clientId = consumerProperties.getClientId();
+        this.maxWait = consumerProperties.getMaxWait();
+        this.maxMessagesBeforeCommit = consumerProperties.getMaxMessagesBeforeCommit();
+        this.maxTimeBeforeCommit = (long) consumerProperties.getMaxTimeBeforeCommit();
         this.brokerId = brokerId;
-        this.hwmRefreshIntervalMs = consumerProperties.getBaseProperties().getHwmRefreshIntervalMs();
+        this.hwmRefreshIntervalMs = consumerProperties.getHwmRefreshIntervalMs();
 
         this.handlerProcess = metrics.timer(metricName("handlerProcess"));
         this.handlerCommit = metrics.timer(metricName("handlerCommit"));
@@ -108,7 +110,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
         this.kafkaCommit = metrics.timer(metricName("kafkaCommit"));
         this.kafkaFetch = metrics.timer(metricName("kafkaFetch"));
 
-        this.consumer = instantiateKafkaConsumer();
+        this.consumer = instantiateKafkaConsumer(consumerProperties);
 
         metrics.register(metricName("consumerActive"), (Gauge<Integer>) () -> getActiveConsumers());
         metrics.register(metricName("messagesBehind"), (Gauge<Long>) messagesBehind::get);
@@ -116,9 +118,32 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
         metrics.register(metricName("uncommittedMessages"), (Gauge<Long>) () -> getUncommittedMessages());
     }
 
-    private KafkaConsumer<byte[], byte[]> instantiateKafkaConsumer() {
-        return new KafkaConsumer<>(KafkaConsumerProperties.getConfig(),
-            new ByteArrayDeserializer(), new ByteArrayDeserializer());
+    private KafkaConsumer<byte[], byte[]> instantiateKafkaConsumer(KafkaConsumerProperties properties) {
+        Map<String, Object> configs = new HashMap<>();
+
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, properties.getBootstrapServers());
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, properties.getConsumerGroup());
+        configs.put(ConsumerConfig.CLIENT_ID_CONFIG, properties.getClientId());
+        configs.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, properties.getSessionTimeout());
+        configs.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, properties.getHeartbeatInterval());
+        configs.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, properties.getAutoOffsetReset());
+        configs.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, properties.getMinBytes());
+        configs.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, properties.getMaxWait());
+        configs.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, properties.getMaxPartitionFetchBytes());
+        configs.put(ConsumerConfig.SEND_BUFFER_CONFIG, properties.getSendBufferBytes());
+        configs.put(ConsumerConfig.RECEIVE_BUFFER_CONFIG, properties.getReceiveBufferBytes());
+        configs.put(ConsumerConfig.RECONNECT_BACKOFF_MS_CONFIG, properties.getReconnectBackoffMs());
+        configs.put(ConsumerConfig.RETRY_BACKOFF_MS_CONFIG, properties.getRetryBackoffMs());
+        configs.put(ConsumerConfig.METADATA_MAX_AGE_CONFIG, properties.getMetadataMaxAgeMs());
+        configs.put(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG, properties.getConnectionsMaxIdleMs());
+        configs.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, properties.getRequestTimeoutMs());
+        configs.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, properties.getMaxPollRecords());
+
+        configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, Boolean.FALSE);
+        configs.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, Long.valueOf(0L));
+        configs.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, RangeAssignor.class.getName());
+
+        return new KafkaConsumer<>(configs, new ByteArrayDeserializer(), new ByteArrayDeserializer());
     }
 
     private String metricName(String type) {
@@ -301,18 +326,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                         if (currentMessagesReceived != null && currentCommitTime != null &&
                                 needsCommit(tp.topic(), tp.partition(), currentMessagesReceived.intValue(),
                                         currentCommitTime.longValue())) {
-
-                            try {
-                                OffsetAndMetadata oam = commitOffsets.get(tp);
-                                if (oam != null) {
-                                    commit(tp.topic(), tp.partition(), oam.offset());
-                                    clearState(tp);
-                                }
-                            } catch (Exception e) {
-                                LOG.error("Error while committing offsets to " + tp.topic() + "-" + tp.partition() + ": ", e);
-                                abortAll();
-                                continue;
-                            }
+                            handleCommit(tp);
                         }
 
                     }
@@ -323,18 +337,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
                     Long currentCommitTime = nextCommitTime.get(tp);
                     if (currentMessagesReceived != null && currentCommitTime != null &&
                             needsCommit(tp.topic(), tp.partition(), currentMessagesReceived.intValue(), currentCommitTime.longValue())) {
-
-                        try {
-                            OffsetAndMetadata oam = commitOffsets.get(tp);
-                            if (oam != null) {
-                                commit(tp.topic(), tp.partition(), oam.offset());
-                                clearState(tp);
-                            }
-                        } catch (Exception e) {
-                            LOG.error("Error while committing offsets to " + tp.topic() + "-" + tp.partition() + ": ", e);
-                            abortAll();
-                            continue;
-                        }
+                            handleCommit(tp);
                     }
                 }
 
@@ -353,6 +356,19 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
             }
         }
 
+    }
+
+    private void handleCommit(TopicPartition tp) {
+        try {
+            OffsetAndMetadata oam = commitOffsets.get(tp);
+            if (oam != null) {
+                commit(tp.topic(), tp.partition(), oam.offset());
+                clearState(tp);
+            }
+        } catch (Exception ex) {
+            LOG.error("Error while committing offsets to " + tp.topic() + "-" + tp.partition() + ": ", ex);
+            abortAll();
+        }
     }
 
     protected void commitAll() {
