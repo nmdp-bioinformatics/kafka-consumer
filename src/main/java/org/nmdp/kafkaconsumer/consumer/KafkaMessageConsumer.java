@@ -140,7 +140,7 @@ public class KafkaMessageConsumer extends Thread implements Closeable {
         configs.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, properties.getMaxPollRecords());
 
         configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, Boolean.FALSE);
-        configs.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, Long.valueOf(0L));
+        configs.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 0);
         configs.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, RangeAssignor.class.getName());
 
         return new KafkaConsumer<>(configs, new ByteArrayDeserializer(), new ByteArrayDeserializer());
